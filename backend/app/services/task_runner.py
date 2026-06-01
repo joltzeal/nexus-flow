@@ -46,6 +46,9 @@ class WorkItemBrowserManager:
     async def close(self, session_id: str, *, delete: bool = False) -> None:
         await browser_session_service.close_session(session_id, delete=delete, task_key=self.task_key)
 
+    async def keep_open(self, session_id: str) -> None:
+        await browser_session_service.keep_open(session_id, task_key=self.task_key)
+
     async def arrange(
         self,
         session_ids: Sequence[str] | None = None,
@@ -54,7 +57,7 @@ class WorkItemBrowserManager:
         await browser_session_service.arrange_run(
             self.run_id,
             vendor=self.vendor,
-            session_ids=session_ids or self.session_ids,
+            session_ids=session_ids,
             options=options,
         )
 
@@ -103,7 +106,7 @@ async def run_item(run_id: str, work_item_id: str) -> None:
     run = runtime_store.get_run(run_id)
     task_module = get_task_module(run.task_key)
     item = runtime_store.start_item(run_id, work_item_id)
-    await log_store.add(run_id, "debug", f"第 {item.index} 项开始运行。", work_item_id=item.id)
+    # await log_store.add(run_id, "debug", f"第 {item.index} 项开始运行。", work_item_id=item.id)
 
     def is_stopping() -> bool:
         return runtime_store.is_stopping(run_id)

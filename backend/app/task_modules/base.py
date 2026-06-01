@@ -151,6 +151,9 @@ class BrowserSessionManager(Protocol):
     async def close(self, session_id: str, *, delete: bool = False) -> None:
         ...
 
+    async def keep_open(self, session_id: str) -> None:
+        ...
+
     async def arrange(
         self,
         session_ids: Sequence[str] | None = None,

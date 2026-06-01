@@ -105,6 +105,10 @@ class BrowserSessionService:
             session = runtime_store.update_session(session.id, status="deleted")
             sqlite_store.save_browser_session(task_key, session)
 
+    async def keep_open(self, session_id: str, *, task_key: str) -> None:
+        session = runtime_store.update_session(session_id, cleanup_policy="keep_open")
+        sqlite_store.save_browser_session(task_key, session)
+
     async def cleanup_run(self, run_id: str, *, task_key: str, force: bool = False) -> None:
         await self._cleanup_sessions(
             runtime_store.list_run_sessions(run_id),

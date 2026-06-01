@@ -51,7 +51,9 @@ async def create_task_run(payload: TaskRunCreateRequest) -> dict:
         raise HTTPException(status_code=409, detail="已有任务正在运行，请先停止当前任务。")
 
     try:
-        work_items = list(task.build_work_items(payload.config))
+        build_config = dict(payload.config)
+        build_config["_run_concurrency"] = payload.concurrency
+        work_items = list(task.build_work_items(build_config))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"任务配置无法生成工作项：{exc}") from exc
     if not work_items:

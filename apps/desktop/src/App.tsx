@@ -108,8 +108,8 @@ function App() {
   const [plugins, setPlugins] = useState<PluginModule[]>([])
   const [runs, setRuns] = useState<TaskRun[]>([])
   const [runLogs, setRunLogs] = useState<Record<string, TaskRunLog[]>>({})
-  const [runResults, setRunResults] = useState<Record<string, TaskResult[]>>({})
-  const [runArtifacts, setRunArtifacts] = useState<Record<string, TaskArtifact[]>>({})
+  const [taskResults, setTaskResults] = useState<Record<string, TaskResult[]>>({})
+  const [taskArtifacts, setTaskArtifacts] = useState<Record<string, TaskArtifact[]>>({})
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [selectedTaskKey, setSelectedTaskKey] = useState("")
   const [selectedVendor, setSelectedVendor] = useState(VENDOR_BIT_BROWSER)
@@ -166,8 +166,8 @@ function App() {
     [activeRunId, runs],
   )
   const selectedRunLogs = activeRunId ? runLogs[activeRunId] ?? [] : []
-  const selectedRunResults = activeRunId ? runResults[activeRunId] ?? [] : []
-  const selectedRunArtifacts = activeRunId ? runArtifacts[activeRunId] ?? [] : []
+  const selectedTaskResults = selectedTask ? taskResults[selectedTask.key] ?? [] : []
+  const selectedTaskArtifacts = selectedTask ? taskArtifacts[selectedTask.key] ?? [] : []
   const browserStatusList = useMemo(
     () => [
       { key: VENDOR_BIT_BROWSER, label: "BitBrowser", status: browserStatuses[VENDOR_BIT_BROWSER] ?? "checking" },
@@ -259,7 +259,9 @@ function App() {
         setRuns((current) => upsertRun(current, run))
         if (run.id === activeRunId) {
           setActiveRunId(run.id)
-          void loadRunDetails(run.id)
+        }
+        if (selectedTask && run.task_key === selectedTask.key) {
+          void loadTaskDetails(selectedTask.key)
         }
       }
 
@@ -286,7 +288,7 @@ function App() {
         closeWebSocket(socket)
       }
     }
-  }, [apiReady, activeRunId])
+  }, [apiReady, activeRunId, selectedTask])
 
   useEffect(() => {
     if (!activeRunId) {
@@ -345,19 +347,19 @@ function App() {
   }, [activeRunId])
 
   useEffect(() => {
-    if (!activeRunId) {
+    if (!selectedTask) {
       return
     }
 
-    void loadRunDetails(activeRunId)
-  }, [activeRunId])
+    void loadTaskDetails(selectedTask.key)
+  }, [selectedTask])
 
   const refreshActiveRunDetails = useCallback(() => {
-    if (!activeRunId) {
-      return Promise.resolve()
+    if (selectedTask) {
+      return loadTaskDetails(selectedTask.key)
     }
-    return loadRunDetails(activeRunId)
-  }, [activeRunId])
+    return Promise.resolve()
+  }, [selectedTask])
 
   useEffect(() => {
     if (!selectedTask) {
@@ -412,7 +414,7 @@ function App() {
       const nextActiveRun = nextRuns.find((run) => isRunActive(run)) ?? nextRuns[0] ?? null
       setActiveRunId((current) => current ?? nextActiveRun?.id ?? null)
       if (nextActiveRun) {
-        await Promise.all([loadRecentLogs(nextActiveRun.id), loadRunDetails(nextActiveRun.id)])
+        await loadRecentLogs(nextActiveRun.id)
       }
     } catch (caught) {
       setError(getErrorMessage(caught))
@@ -431,19 +433,19 @@ function App() {
     }
   }
 
-  async function loadRunDetails(runId: string) {
+  async function loadTaskDetails(taskKey: string) {
     try {
       const [results, artifacts] = await Promise.all([
-        api.listRunResults(runId),
-        api.listRunArtifacts(runId),
+        api.listTaskResults(taskKey),
+        api.listTaskArtifacts(taskKey),
       ])
-      setRunResults((current) => ({
+      setTaskResults((current) => ({
         ...current,
-        [runId]: results,
+        [taskKey]: results,
       }))
-      setRunArtifacts((current) => ({
+      setTaskArtifacts((current) => ({
         ...current,
-        [runId]: artifacts,
+        [taskKey]: artifacts,
       }))
     } catch (caught) {
       setError(getErrorMessage(caught))
@@ -572,6 +574,9 @@ function App() {
     try {
       const run = await api.stopRun(activeRun.id)
       setRuns((current) => upsertRun(current, run))
+      if (selectedTask) {
+        await loadTaskDetails(selectedTask.key)
+      }
     } catch (caught) {
       setError(getErrorMessage(caught))
     } finally {
@@ -717,8 +722,8 @@ function App() {
         onConfigSave={() => saveTaskConfig()}
         onConfigExport={exportTaskConfig}
         onConfigImport={(file) => void importTaskConfig(file)}
-        runResults={selectedRunResults}
-        runArtifacts={selectedRunArtifacts}
+        runResults={selectedTaskResults}
+        runArtifacts={selectedTaskArtifacts}
         onRefreshRunDetails={refreshActiveRunDetails}
         onStart={() => void startRun()}
         onStop={() => void stopRun()}

@@ -296,6 +296,10 @@ export const api = {
     apiFetch<TaskResult[]>(`/api/tasks/runs/${runId}/results`),
   listRunArtifacts: (runId: string) =>
     apiFetch<TaskArtifact[]>(`/api/tasks/runs/${runId}/artifacts`),
+  listTaskResults: (taskKey: string) =>
+    apiFetch<TaskResult[]>(`/api/tasks/${taskKey}/results`),
+  listTaskArtifacts: (taskKey: string) =>
+    apiFetch<TaskArtifact[]>(`/api/tasks/${taskKey}/artifacts`),
   runsWsUrl: () => `${WS_BASE}/api/tasks/runs/ws`,
   runLogsWsUrl: (runId: string) => `${WS_BASE}/api/tasks/runs/${runId}/logs/ws`,
   createRun: (payload: CreateTaskRunPayload) =>

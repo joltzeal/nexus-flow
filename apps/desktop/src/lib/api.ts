@@ -55,6 +55,21 @@ export interface PluginModule {
   error: string
 }
 
+export interface PluginRepositoryModule {
+  key: string
+  name: string
+  version: string
+  description: string
+  url: string
+  file: string
+  sha256: string
+  size: number
+  changelog: string
+  local_version: string
+  installed: boolean
+  has_update: boolean
+}
+
 export interface BrowserHealthResponse {
   vendor: string
   ok: boolean
@@ -280,6 +295,16 @@ export const api = {
       body,
     })
   },
+  checkPluginRepository: (repositoryUrl: string) =>
+    apiFetch<PluginRepositoryModule[]>("/api/task-modules/repository/check", {
+      method: "POST",
+      body: JSON.stringify({ repository_url: repositoryUrl }),
+    }),
+  installPluginFromRepository: (plugin: Pick<PluginRepositoryModule, "key" | "version" | "url" | "sha256">) =>
+    apiFetch<PluginModule>("/api/task-modules/repository/install", {
+      method: "POST",
+      body: JSON.stringify(plugin),
+    }),
   getTaskConfiguration: (taskKey: string) =>
     apiFetch<TaskConfigurationResponse>(`/api/tasks/configurations/${taskKey}`),
   saveTaskConfiguration: (taskKey: string, config: Record<string, unknown>) =>

@@ -76,6 +76,7 @@ import packageJson from "../package.json"
 import {
   api,
   type PluginModule,
+  type PluginRepositoryModule,
   type TaskArtifact,
   type TaskArtifactDefinition,
   type TaskConfigField,
@@ -97,6 +98,8 @@ const VENDOR_BIT_BROWSER = "bit_browser"
 const VENDOR_ADS_POWER = "ads_power"
 const PACKAGE_VERSION = packageJson.version
 const MAX_LOGS_PER_RUN = 1000
+const PLUGIN_REPOSITORY_URL_STORAGE_KEY = "helix.pluginRepositoryUrl"
+const DEFAULT_PLUGIN_REPOSITORY_URL = "https://pub-7e6aa4dd253e41fe8e27bb09c951b192.r2.dev/plugin-repo/index.json"
 
 type Page = "launcher" | "records" | "modules"
 
@@ -128,6 +131,10 @@ function App() {
   const [isSavingConfig, setIsSavingConfig] = useState(false)
   const [isUploadingPlugin, setIsUploadingPlugin] = useState(false)
   const [isReloadingPlugins, setIsReloadingPlugins] = useState(false)
+  const [pluginRepositoryUrl, setPluginRepositoryUrl] = useState(loadPluginRepositoryUrl)
+  const [repositoryPlugins, setRepositoryPlugins] = useState<PluginRepositoryModule[]>([])
+  const [isCheckingPluginRepository, setIsCheckingPluginRepository] = useState(false)
+  const [installingRepositoryPluginKey, setInstallingRepositoryPluginKey] = useState<string | null>(null)
   const [updateCheckRequestId, setUpdateCheckRequestId] = useState(0)
   const [isCheckingForUpdate, setIsCheckingForUpdate] = useState(false)
   const [updateCheckMessage, setUpdateCheckMessage] = useState<string | null>(null)
@@ -695,6 +702,50 @@ function App() {
     }
   }
 
+  async function checkPluginRepository() {
+    const repositoryUrl = pluginRepositoryUrl.trim()
+    if (!repositoryUrl) {
+      setError("请先填写插件仓库 index.json 地址。")
+      return
+    }
+
+    setError(null)
+    setIsCheckingPluginRepository(true)
+    localStorage.setItem(PLUGIN_REPOSITORY_URL_STORAGE_KEY, repositoryUrl)
+
+    try {
+      const modules = await api.checkPluginRepository(repositoryUrl)
+      setRepositoryPlugins(modules)
+    } catch (caught) {
+      setError(getErrorMessage(caught))
+    } finally {
+      setIsCheckingPluginRepository(false)
+    }
+  }
+
+  async function installRepositoryPlugin(plugin: PluginRepositoryModule) {
+    if (!plugin.url) {
+      setError("仓库插件缺少下载 URL。")
+      return
+    }
+
+    setError(null)
+    setInstallingRepositoryPluginKey(plugin.key)
+
+    try {
+      await api.installPluginFromRepository(plugin)
+      await Promise.all([refreshPlugins(), refreshTasks()])
+      if (pluginRepositoryUrl.trim()) {
+        const modules = await api.checkPluginRepository(pluginRepositoryUrl.trim())
+        setRepositoryPlugins(modules)
+      }
+    } catch (caught) {
+      setError(getErrorMessage(caught))
+    } finally {
+      setInstallingRepositoryPluginKey(null)
+    }
+  }
+
   const content = dashboardState !== "ready" ? (
     <BootScreen
       state={dashboardState}
@@ -742,8 +793,15 @@ function App() {
   ) : (
     <PluginModulesPanel
       modules={plugins}
+      repositoryUrl={pluginRepositoryUrl}
+      repositoryModules={repositoryPlugins}
       isUploading={isUploadingPlugin}
       isReloading={isReloadingPlugins}
+      isCheckingRepository={isCheckingPluginRepository}
+      installingRepositoryPluginKey={installingRepositoryPluginKey}
+      onRepositoryUrlChange={setPluginRepositoryUrl}
+      onCheckRepository={() => void checkPluginRepository()}
+      onInstallRepositoryPlugin={(plugin) => void installRepositoryPlugin(plugin)}
       onUpload={(file) => void uploadPluginModule(file)}
       onReloadAll={() => void reloadPluginModules()}
       onReload={(key) => void reloadPluginModule(key)}
@@ -1543,36 +1601,136 @@ function RunRecords({
 
 function PluginModulesPanel({
   modules,
+  repositoryUrl,
+  repositoryModules,
   isUploading,
   isReloading,
+  isCheckingRepository,
+  installingRepositoryPluginKey,
+  onRepositoryUrlChange,
+  onCheckRepository,
+  onInstallRepositoryPlugin,
   onUpload,
   onReloadAll,
   onReload,
   onDelete,
 }: {
   modules: PluginModule[]
+  repositoryUrl: string
+  repositoryModules: PluginRepositoryModule[]
   isUploading: boolean
   isReloading: boolean
+  isCheckingRepository: boolean
+  installingRepositoryPluginKey: string | null
+  onRepositoryUrlChange: (value: string) => void
+  onCheckRepository: () => void
+  onInstallRepositoryPlugin: (plugin: PluginRepositoryModule) => void
   onUpload: (file: File) => void
   onReloadAll: () => void
   onReload: (key: string) => void
   onDelete: (key: string) => void
 }) {
   const uploadInputRef = useRef<HTMLInputElement>(null)
+  const busy = isUploading || isReloading || isCheckingRepository || installingRepositoryPluginKey !== null
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-4 rounded-lg border p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
+      <div className="flex shrink-0 flex-col gap-3">
+        <div className="flex flex-col gap-1">
           <div className="font-medium">任务插件</div>
-          <div className="text-sm text-muted-foreground">上传、重载、删除插件包。</div>
+          <div className="text-sm text-muted-foreground">从仓库安装、升级，或上传本地插件包。</div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={onReloadAll} disabled={isReloading}>
+
+        <div className="rounded-lg border p-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+            <Field className="min-w-0 flex-1">
+              <FieldLabel>插件仓库</FieldLabel>
+              <Input
+                value={repositoryUrl}
+                placeholder="https://pub-xxxx.r2.dev/plugin-repo/index.json"
+                onChange={(event) => onRepositoryUrlChange(event.currentTarget.value)}
+              />
+            </Field>
+            <Button variant="outline" onClick={onCheckRepository} disabled={busy}>
+              <RefreshCwIcon data-icon="inline-start" />
+              {isCheckingRepository ? "检查中" : "检查仓库"}
+            </Button>
+          </div>
+
+          {repositoryModules.length > 0 ? (
+            <div className="mt-3 overflow-hidden rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>插件</TableHead>
+                    <TableHead>本地版本</TableHead>
+                    <TableHead>仓库版本</TableHead>
+                    <TableHead>大小</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead className="text-right">操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {repositoryModules.map((plugin) => {
+                    const installing = installingRepositoryPluginKey === plugin.key
+                    const actionLabel = plugin.installed
+                      ? plugin.has_update
+                        ? "升级"
+                        : "已安装"
+                      : "安装"
+                    return (
+                      <TableRow key={plugin.key}>
+                        <TableCell>
+                          <div className="flex min-w-0 flex-col gap-1">
+                            <span className="font-medium">{plugin.name || plugin.key}</span>
+                            <span className="font-mono text-xs text-muted-foreground">{plugin.key}</span>
+                            {plugin.description ? (
+                              <span className="max-w-96 truncate text-xs text-muted-foreground">
+                                {plugin.description}
+                              </span>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell>{plugin.local_version || "-"}</TableCell>
+                        <TableCell>{plugin.version || "-"}</TableCell>
+                        <TableCell>{formatFileSize(plugin.size)}</TableCell>
+                        <TableCell>
+                          {plugin.has_update ? (
+                            <Badge variant="default">可升级</Badge>
+                          ) : plugin.installed ? (
+                            <Badge variant="secondary">最新</Badge>
+                          ) : (
+                            <Badge variant="outline">未安装</Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex justify-end">
+                            <Button
+                              variant={plugin.has_update || !plugin.installed ? "default" : "outline"}
+                              size="sm"
+                              onClick={() => onInstallRepositoryPlugin(plugin)}
+                              disabled={busy || (plugin.installed && !plugin.has_update) || !plugin.url}
+                            >
+                              <DownloadIcon data-icon="inline-start" />
+                              {installing ? "处理中" : actionLabel}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="outline" onClick={onReloadAll} disabled={busy}>
             <RefreshCwIcon data-icon="inline-start" />
             {isReloading ? "处理中" : "重载全部"}
           </Button>
-          <Button variant="outline" onClick={() => uploadInputRef.current?.click()} disabled={isUploading}>
+          <Button variant="outline" onClick={() => uploadInputRef.current?.click()} disabled={busy}>
             <UploadIcon data-icon="inline-start" />
             上传
           </Button>
@@ -1615,10 +1773,10 @@ function PluginModulesPanel({
                     {module.error ? <span className="text-sm text-destructive">{module.error}</span> : null}
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={() => onReload(module.key)} disabled={isReloading}>
+                    <Button variant="outline" size="sm" onClick={() => onReload(module.key)} disabled={busy}>
                       重载
                     </Button>
-                    <Button variant="destructive" size="sm" onClick={() => onDelete(module.key)} disabled={isReloading}>
+                    <Button variant="destructive" size="sm" onClick={() => onDelete(module.key)} disabled={busy}>
                       删除
                     </Button>
                   </div>
@@ -1909,6 +2067,14 @@ function loadWindowArrangeSettings() {
   }
 }
 
+function loadPluginRepositoryUrl() {
+  try {
+    return window.localStorage.getItem(PLUGIN_REPOSITORY_URL_STORAGE_KEY) || DEFAULT_PLUGIN_REPOSITORY_URL
+  } catch {
+    return DEFAULT_PLUGIN_REPOSITORY_URL
+  }
+}
+
 function sanitizeWindowArrangeSettings(settings: {
   startX: number
   startY: number
@@ -2161,6 +2327,19 @@ function getErrorMessage(error: unknown) {
     return error.message
   }
   return String(error)
+}
+
+function formatFileSize(size: number) {
+  if (!Number.isFinite(size) || size <= 0) {
+    return "-"
+  }
+  if (size < 1024) {
+    return `${size} B`
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`
+  }
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
 function formatResultValue(value: unknown) {

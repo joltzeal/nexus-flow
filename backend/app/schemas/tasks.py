@@ -54,6 +54,32 @@ class PluginModuleResponse(BaseModel):
     error: str = ""
 
 
+class PluginRepositoryCheckRequest(BaseModel):
+    repository_url: str
+
+
+class PluginRepositoryPluginResponse(BaseModel):
+    key: str
+    name: str = ""
+    version: str = ""
+    description: str = ""
+    url: str = ""
+    file: str = ""
+    sha256: str = ""
+    size: int = 0
+    changelog: str = ""
+    local_version: str = ""
+    installed: bool = False
+    has_update: bool = False
+
+
+class PluginInstallFromUrlRequest(BaseModel):
+    url: str
+    sha256: str = ""
+    key: str = ""
+    version: str = ""
+
+
 class TaskRunCreateRequest(BaseModel):
     task_key: str
     vendor: str = "bit_browser"

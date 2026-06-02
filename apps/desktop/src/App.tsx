@@ -99,7 +99,7 @@ const VENDOR_ADS_POWER = "ads_power"
 const PACKAGE_VERSION = packageJson.version
 const MAX_LOGS_PER_RUN = 1000
 const PLUGIN_REPOSITORY_URL_STORAGE_KEY = "helix.pluginRepositoryUrl"
-const DEFAULT_PLUGIN_REPOSITORY_URL = "https://pub-7e6aa4dd253e41fe8e27bb09c951b192.r2.dev/plugin-repo/index.json"
+const DEFAULT_PLUGIN_REPOSITORY_URL = ""
 
 type Page = "launcher" | "records" | "modules"
 

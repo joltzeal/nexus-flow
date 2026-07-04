@@ -15,7 +15,7 @@ from app.core.paths import get_plugins_dir
 from app.task_modules.base import AutomationTaskModule
 
 
-PLUGIN_NAMESPACE = "helix_dynamic_plugins"
+PLUGIN_NAMESPACE = "nexus_flow_dynamic_plugins"
 PLUGIN_MANIFEST = "manifest.json"
 
 

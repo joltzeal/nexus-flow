@@ -46,19 +46,19 @@ fn spawn_api_sidecar(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>>
     std::fs::create_dir_all(&data_dir)?;
     log_sidecar_message(
         &data_dir,
-        &format!("starting helix-api data_dir={}", data_dir.display()),
+        &format!("starting nexus-flow-api data_dir={}", data_dir.display()),
     );
 
     let (mut rx, child) = app
         .shell()
-        .sidecar("helix-api")?
-        .env("HELIX_API_HOST", "127.0.0.1")
-        .env("HELIX_API_PORT", "8765")
-        .env("HELIX_API_RELOAD", "false")
-        .env("HELIX_DATA_DIR", data_dir.as_os_str())
+        .sidecar("nexus-flow-api")?
+        .env("NEXUS_FLOW_API_HOST", "127.0.0.1")
+        .env("NEXUS_FLOW_API_PORT", "8765")
+        .env("NEXUS_FLOW_API_RELOAD", "false")
+        .env("NEXUS_FLOW_DATA_DIR", data_dir.as_os_str())
         .spawn()?;
 
-    log_sidecar_message(&data_dir, &format!("started helix-api pid={}", child.pid()));
+    log_sidecar_message(&data_dir, &format!("started nexus-flow-api pid={}", child.pid()));
     app.manage(ApiSidecar(Mutex::new(Some(child))));
     let log_dir = data_dir.clone();
 
@@ -66,11 +66,11 @@ fn spawn_api_sidecar(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>>
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
-                    println!("[helix-api] {}", String::from_utf8_lossy(&line).trim_end());
+                    println!("[nexus-flow-api] {}", String::from_utf8_lossy(&line).trim_end());
                 }
                 CommandEvent::Stderr(line) => {
                     let message =
-                        format!("[helix-api] {}", String::from_utf8_lossy(&line).trim_end());
+                        format!("[nexus-flow-api] {}", String::from_utf8_lossy(&line).trim_end());
                     eprintln!("{message}");
                     log_sidecar_message(&log_dir, &message);
                 }
@@ -80,7 +80,7 @@ fn spawn_api_sidecar(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>>
                 CommandEvent::Terminated(payload) => log_sidecar_message(
                     &log_dir,
                     &format!(
-                        "helix-api terminated code={:?} signal={:?}",
+                        "nexus-flow-api terminated code={:?} signal={:?}",
                         payload.code, payload.signal
                     ),
                 ),
@@ -97,7 +97,7 @@ fn log_sidecar_message(data_dir: &Path, message: &str) {
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(data_dir.join("helix-sidecar.log"))
+        .open(data_dir.join("nexus-flow-sidecar.log"))
     {
         let _ = writeln!(file, "{message}");
     }
@@ -145,7 +145,7 @@ pub fn run() {
         .setup(|_app| {
             #[cfg(not(debug_assertions))]
             if let Err(error) = spawn_api_sidecar(_app) {
-                let message = format!("failed to start helix-api sidecar: {error}");
+                let message = format!("failed to start nexus-flow-api sidecar: {error}");
                 eprintln!("{message}");
                 if let Ok(data_dir) = _app.path().app_data_dir() {
                     let _ = std::fs::create_dir_all(&data_dir);

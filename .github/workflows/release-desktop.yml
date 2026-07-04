@@ -172,20 +172,20 @@ jobs:
           uv run pyinstaller \
             --clean \
             --onefile \
-            --name "helix-api-${TARGET_TRIPLE}" \
+            --name "nexus-flow-api-${TARGET_TRIPLE}" \
             --paths backend \
             "${PYINSTALLER_COLLECT_ARGS[@]}" \
             "${PYINSTALLER_HIDDEN_IMPORTS[@]}" \
             backend/app/run.py
 
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            HELIX_API_IMPORT_CHECK=1 "dist/helix-api-${TARGET_TRIPLE}.exe"
-            mv "dist/helix-api-${TARGET_TRIPLE}.exe" "apps/desktop/src-tauri/binaries/helix-api-${TARGET_TRIPLE}.exe"
+            NEXUS_FLOW_API_IMPORT_CHECK=1 "dist/nexus-flow-api-${TARGET_TRIPLE}.exe"
+            mv "dist/nexus-flow-api-${TARGET_TRIPLE}.exe" "apps/desktop/src-tauri/binaries/nexus-flow-api-${TARGET_TRIPLE}.exe"
           else
-            chmod +x "dist/helix-api-${TARGET_TRIPLE}"
-            HELIX_API_IMPORT_CHECK=1 "dist/helix-api-${TARGET_TRIPLE}"
-            mv "dist/helix-api-${TARGET_TRIPLE}" "apps/desktop/src-tauri/binaries/helix-api-${TARGET_TRIPLE}"
-            chmod +x "apps/desktop/src-tauri/binaries/helix-api-${TARGET_TRIPLE}"
+            chmod +x "dist/nexus-flow-api-${TARGET_TRIPLE}"
+            NEXUS_FLOW_API_IMPORT_CHECK=1 "dist/nexus-flow-api-${TARGET_TRIPLE}"
+            mv "dist/nexus-flow-api-${TARGET_TRIPLE}" "apps/desktop/src-tauri/binaries/nexus-flow-api-${TARGET_TRIPLE}"
+            chmod +x "apps/desktop/src-tauri/binaries/nexus-flow-api-${TARGET_TRIPLE}"
           fi
 
       - name: Build and publish Tauri release
@@ -199,7 +199,7 @@ jobs:
           args: ${{ matrix.args }}
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseCommitish: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.sha }}
-          releaseName: Helix ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          releaseName: Nexus Flow ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseBody: "Desktop builds for macOS and Windows."
           releaseDraft: false
           prerelease: false

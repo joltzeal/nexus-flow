@@ -7,7 +7,7 @@ from app.main import app
 
 
 def main() -> None:
-    if os.environ.get("HELIX_API_IMPORT_CHECK") == "1":
+    if os.environ.get("NEXUS_FLOW_API_IMPORT_CHECK") == "1":
         from DrissionPage import ChromiumOptions, ChromiumPage
 
         print(

@@ -98,7 +98,7 @@ const VENDOR_BIT_BROWSER = "bit_browser"
 const VENDOR_ADS_POWER = "ads_power"
 const PACKAGE_VERSION = packageJson.version
 const MAX_LOGS_PER_RUN = 1000
-const PLUGIN_REPOSITORY_URL_STORAGE_KEY = "helix.pluginRepositoryUrl"
+const PLUGIN_REPOSITORY_URL_STORAGE_KEY = "nexus-flow.pluginRepositoryUrl"
 const DEFAULT_PLUGIN_REPOSITORY_URL = ""
 
 type Page = "launcher" | "records" | "modules"
@@ -527,7 +527,7 @@ function App() {
         space_y: settings.spaceY,
       })
       setWindowArrangeSettings(settings)
-      window.localStorage.setItem("helix.windowArrangeSettings", JSON.stringify(settings))
+      window.localStorage.setItem("nexus-flow.windowArrangeSettings", JSON.stringify(settings))
       setIsArrangeDialogOpen(false)
     } catch (caught) {
       setError(getErrorMessage(caught))
@@ -814,7 +814,7 @@ function App() {
       <div className="mx-auto flex h-full w-full max-w-[1440px] flex-col gap-4 overflow-hidden px-4 py-4">
         <header className="flex shrink-0 flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex min-w-0 flex-col gap-1">
-            <h1 className="text-2xl font-semibold tracking-normal">Helix 自动化控制台</h1>
+            <h1 className="text-2xl font-semibold tracking-normal">Nexus Flow 自动化控制台</h1>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
               <span>v{appVersion}</span>
               <Button
@@ -2048,7 +2048,7 @@ function MultiSelect({
 
 function loadWindowArrangeSettings() {
   try {
-    const rawValue = window.localStorage.getItem("helix.windowArrangeSettings")
+    const rawValue = window.localStorage.getItem("nexus-flow.windowArrangeSettings")
     if (!rawValue) {
       return { startX: 0, startY: 0, width: 500, height: 950, col: 3, spaceX: -200, spaceY: 0 }
     }

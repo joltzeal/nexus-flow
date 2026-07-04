@@ -336,7 +336,7 @@ wheels = [
 ]
 
 [[package]]
-name = "helix"
+name = "nexus-flow"
 version = "0.2.0"
 source = { virtual = "." }
 dependencies = [

@@ -9,7 +9,7 @@ PROJECT_DIR = BACKEND_DIR.parent
 
 
 class Settings(BaseSettings):
-    app_name: str = "Helix"
+    app_name: str = "Nexus Flow"
     api_host: str = "127.0.0.1"
     api_port: int = 8765
     api_reload: bool = False
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file=(PROJECT_DIR / ".env", BACKEND_DIR / ".env"),
-        env_prefix="HELIX_",
+        env_prefix="NEXUS_FLOW_",
         extra="ignore",
     )
 
@@ -39,5 +39,5 @@ def get_settings() -> Settings:
     settings = Settings()
     settings.mode = settings.mode.strip().lower()
     if settings.mode not in {"development", "production"}:
-        raise ValueError("HELIX_MODE must be 'development' or 'production'.")
+        raise ValueError("NEXUS_FLOW_MODE must be 'development' or 'production'.")
     return settings

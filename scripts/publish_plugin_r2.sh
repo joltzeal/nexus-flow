@@ -7,7 +7,7 @@ Usage:
   scripts/publish_plugin_r2.sh <plugin_dir> [version]
 
 Example:
-  R2_BUCKET=u-card-plugins \
+  R2_BUCKET=nexus-flow-plugins \
   R2_ACCOUNT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
   R2_ACCESS_KEY_ID=... \
   R2_SECRET_ACCESS_KEY=... \
@@ -201,12 +201,13 @@ echo "Packaging ${PLUGIN_KEY} ${PLUGIN_VERSION}..."
 
 SHA256=$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')
 SIZE=$(wc -c < "$ZIP_PATH" | tr -d ' ')
-OBJECT_FILE="${PLUGIN_REPO_PREFIX}/plugins/${PLUGIN_KEY}/${ZIP_NAME}"
+REPOSITORY_FILE="plugins/${PLUGIN_KEY}/${ZIP_NAME}"
+OBJECT_FILE="${PLUGIN_REPO_PREFIX}/${REPOSITORY_FILE}"
 INDEX_OBJECT="${PLUGIN_REPO_PREFIX}/index.json"
 
 if [ -n "$PLUGIN_PUBLIC_BASE_URL" ]; then
   PUBLIC_BASE=$(printf "%s" "$PLUGIN_PUBLIC_BASE_URL" | sed 's:/*$::')
-  PUBLIC_URL="${PUBLIC_BASE}/plugins/${PLUGIN_KEY}/${ZIP_NAME}"
+  PUBLIC_URL="${PUBLIC_BASE}/${REPOSITORY_FILE}"
 else
   PUBLIC_URL=""
 fi
@@ -222,7 +223,7 @@ python3 - "$INDEX_PATH" \
   "$PLUGIN_NAME" \
   "$PLUGIN_VERSION" \
   "$PLUGIN_DESCRIPTION" \
-  "$OBJECT_FILE" \
+  "$REPOSITORY_FILE" \
   "$PUBLIC_URL" \
   "$SHA256" \
   "$SIZE" <<'PY'

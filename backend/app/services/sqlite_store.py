@@ -268,9 +268,9 @@ class SQLiteStore:
 
 
 def _default_db_path() -> Path:
-    if data_dir := os.getenv("HELIX_DATA_DIR"):
-        return Path(data_dir) / "helix-v2.sqlite3"
-    return get_data_dir() / "helix-v2.sqlite3"
+    if data_dir := os.getenv("NEXUS_FLOW_DATA_DIR"):
+        return Path(data_dir) / "nexus-flow-v2.sqlite3"
+    return get_data_dir() / "nexus-flow-v2.sqlite3"
 
 
 def _dumps(value: Any) -> str:

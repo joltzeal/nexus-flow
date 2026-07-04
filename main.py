@@ -1,5 +1,5 @@
 def main():
-    print("Hello from helix!")
+    print("Hello from nexus-flow!")
 
 
 if __name__ == "__main__":

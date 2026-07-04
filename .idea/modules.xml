@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/u-card.iml" filepath="$PROJECT_DIR$/.idea/u-card.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/nexus-flow.iml" filepath="$PROJECT_DIR$/.idea/nexus-flow.iml" />
     </modules>
   </component>
 </project>

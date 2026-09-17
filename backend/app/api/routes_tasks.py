@@ -10,6 +10,8 @@ from app.schemas.tasks import (
     TaskConfigurationResponse,
     TaskConfigurationSaveRequest,
     TaskModuleResponse,
+    TaskResourceRecordResponse,
+    TaskResourceSaveRequest,
     TaskResultResponse,
     TaskRunCreateRequest,
     TaskRunLogResponse,
@@ -20,6 +22,7 @@ from app.services.runtime_events import runtime_event_hub
 from app.services.runtime_store import runtime_store
 from app.services.sqlite_store import sqlite_store
 from app.services.task_control import TaskControlError, task_control
+from app.services.task_notifications import task_notification_service
 from app.task_modules.registry import get_task_module, list_task_modules
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -43,6 +46,42 @@ async def save_task_configuration(task_key: str, payload: TaskConfigurationSaveR
     return {"task_key": task_key, "config": payload.config}
 
 
+@router.get("/{task_key}/resources/{resource_type}", response_model=list[TaskResourceRecordResponse])
+async def list_task_resources(task_key: str, resource_type: str) -> list[dict]:
+    _ensure_resource_type(task_key, resource_type)
+    return sqlite_store.list_task_resources(task_key, resource_type)
+
+
+@router.put("/{task_key}/resources/{resource_type}", response_model=list[TaskResourceRecordResponse])
+async def replace_task_resources(
+    task_key: str, resource_type: str, payload: TaskResourceSaveRequest
+) -> list[dict]:
+    _ensure_resource_type(task_key, resource_type)
+    try:
+        return sqlite_store.replace_task_resources(
+            task_key,
+            resource_type,
+            [item.model_dump() for item in payload.items],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{task_key}/resources/{resource_type}", response_model=list[TaskResourceRecordResponse])
+async def append_task_resources(
+    task_key: str, resource_type: str, payload: TaskResourceSaveRequest
+) -> list[dict]:
+    _ensure_resource_type(task_key, resource_type)
+    try:
+        return sqlite_store.append_task_resources(
+            task_key,
+            resource_type,
+            [item.model_dump() for item in payload.items],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/runs", response_model=TaskRunResponse)
 async def create_task_run(payload: TaskRunCreateRequest) -> dict:
     task = _ensure_task(payload.task_key)
@@ -53,6 +92,17 @@ async def create_task_run(payload: TaskRunCreateRequest) -> dict:
     try:
         build_config = dict(payload.config)
         build_config["_run_concurrency"] = payload.concurrency
+        task.validate_config(build_config)
+        required_resources = [
+            field for field in task.manifest.config_fields if field.required and field.resource_type
+        ]
+        missing_resources = [
+            field.resource_type
+            for field in required_resources
+            if not _has_usable_task_resource(task.manifest.key, field)
+        ]
+        if missing_resources:
+            raise ValueError(f"缺少可用资料：{', '.join(missing_resources)}。")
         work_items = list(task.build_work_items(build_config))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"任务配置无法生成工作项：{exc}") from exc
@@ -147,6 +197,33 @@ async def stream_task_run_logs(websocket: WebSocket, run_id: str) -> None:
         runtime_event_hub.unsubscribe(f"run:{run_id}:logs", queue)
 
 
+@router.websocket("/runs/{run_id}/notifications/ws")
+async def stream_task_run_notifications(websocket: WebSocket, run_id: str) -> None:
+    await websocket.accept()
+    try:
+        _ensure_run(run_id)
+    except HTTPException:
+        await websocket.close(code=4404, reason="Task run not found.")
+        return
+
+    # Deliver only unresolved attention requests when a client connects. They
+    # are not mixed into persisted log history, avoiding repeated TTS on a log
+    # socket reconnect.
+    for notification in task_notification_service.list_active(run_id):
+        await websocket.send_json(
+            {"type": "notification", "event": "raised", "notification": notification}
+        )
+
+    queue = runtime_event_hub.subscribe(f"run:{run_id}:notifications")
+    try:
+        while True:
+            await websocket.send_json(await queue.get())
+    except WebSocketDisconnect:
+        pass
+    finally:
+        runtime_event_hub.unsubscribe(f"run:{run_id}:notifications", queue)
+
+
 @router.get("/runs/{run_id}/browser-sessions", response_model=list[BrowserSessionResponse])
 async def list_run_browser_sessions(run_id: str) -> list[dict]:
     _ensure_run(run_id)
@@ -208,6 +285,31 @@ def _ensure_task(task_key: str):
         return get_task_module(task_key)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _ensure_resource_type(task_key: str, resource_type: str) -> None:
+    task = _ensure_task(task_key)
+    if not any(field.resource_type == resource_type for field in task.manifest.config_fields):
+        raise HTTPException(status_code=404, detail=f"任务 {task_key} 没有 {resource_type} 资料类型。")
+
+
+def _has_usable_task_resource(task_key: str, field) -> bool:
+    records = sqlite_store.list_task_resources(task_key, field.resource_type)
+    for record in records:
+        if record["state"] != "available":
+            continue
+        payload = record["payload"]
+        if field.field_type == "table":
+            if field.table_columns and all(str(payload.get(column, "")).strip() for column in field.table_columns):
+                return True
+            continue
+        if field.field_type == "textarea":
+            if str(payload.get("value", "")).strip():
+                return True
+            continue
+        if payload:
+            return True
+    return False
 
 
 def _ensure_run(run_id: str):

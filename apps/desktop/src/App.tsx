@@ -2,17 +2,23 @@ import { createListCollection } from "@ark-ui/react"
 import { getVersion } from "@tauri-apps/api/app"
 import { isTauri } from "@tauri-apps/api/core"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Toaster, toast } from "sonner"
+import * as XLSX from "xlsx"
 import {
+  CheckIcon,
   ChevronDownIcon,
   DownloadIcon,
   LoaderCircleIcon,
   PackageIcon,
+  PencilIcon,
+  PlusIcon,
   RefreshCwIcon,
   Rows3Icon,
   Settings2Icon,
   SquareIcon,
   PlayIcon,
   ReceiptTextIcon,
+  Trash2Icon,
   UploadIcon,
   WorkflowIcon,
 } from "lucide-react"
@@ -55,6 +61,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Tooltip,
   TooltipContent,
@@ -83,8 +91,10 @@ import {
   type TaskModule,
   type TaskResult,
   type TaskResultDefinition,
+  type TaskResourceRecord,
   type TaskRun,
   type TaskRunLog,
+  type TaskRunNotificationEvent,
 } from "@/lib/api"
 import {
   API_START_TIMEOUT_MESSAGE,
@@ -93,6 +103,7 @@ import {
   useApiReady,
 } from "@/hooks/use-api-ready"
 import { cn } from "@/lib/utils"
+import { announceTaskNotification, unlockTaskNotificationAudio } from "@/lib/task-notification-audio"
 
 const VENDOR_BIT_BROWSER = "bit_browser"
 const VENDOR_ADS_POWER = "ads_power"
@@ -113,11 +124,13 @@ function App() {
   const [runLogs, setRunLogs] = useState<Record<string, TaskRunLog[]>>({})
   const [taskResults, setTaskResults] = useState<Record<string, TaskResult[]>>({})
   const [taskArtifacts, setTaskArtifacts] = useState<Record<string, TaskArtifact[]>>({})
+  const seenNotificationIdsRef = useRef(new Set<string>())
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [selectedTaskKey, setSelectedTaskKey] = useState("")
   const [selectedVendor, setSelectedVendor] = useState(VENDOR_BIT_BROWSER)
   const [concurrency, setConcurrency] = useState(1)
   const [config, setConfig] = useState<Record<string, unknown>>({})
+  const [taskResources, setTaskResources] = useState<Record<string, TaskResourceRecord[]>>({})
   const [browserStatuses, setBrowserStatuses] = useState<Record<string, "checking" | "online" | "offline">>({
     [VENDOR_BIT_BROWSER]: "checking",
     [VENDOR_ADS_POWER]: "checking",
@@ -175,6 +188,17 @@ function App() {
   const selectedRunLogs = activeRunId ? runLogs[activeRunId] ?? [] : []
   const selectedTaskResults = selectedTask ? taskResults[selectedTask.key] ?? [] : []
   const selectedTaskArtifacts = selectedTask ? taskArtifacts[selectedTask.key] ?? [] : []
+  const selectedTaskResources = useMemo(() => {
+    if (!selectedTask) {
+      return {}
+    }
+    return Object.fromEntries(
+      resourceTypesForTask(selectedTask).map((resourceType) => [
+        resourceType,
+        taskResources[taskResourceStateKey(selectedTask.key, resourceType)] ?? [],
+      ]),
+    ) as Record<string, TaskResourceRecord[]>
+  }, [selectedTask, taskResources])
   const browserStatusList = useMemo(
     () => [
       { key: VENDOR_BIT_BROWSER, label: "BitBrowser", status: browserStatuses[VENDOR_BIT_BROWSER] ?? "checking" },
@@ -354,6 +378,60 @@ function App() {
   }, [activeRunId])
 
   useEffect(() => {
+    if (!activeRunId) {
+      return
+    }
+
+    let disposed = false
+    let socket: WebSocket | null = null
+    let retryTimer = 0
+    let retryCount = 0
+
+    const connect = () => {
+      socket = new WebSocket(api.runNotificationsWsUrl(activeRunId))
+      socket.onopen = () => {
+        retryCount = 0
+      }
+      socket.onmessage = (event) => {
+        if (disposed) {
+          return
+        }
+        const notificationEvent = JSON.parse(event.data) as TaskRunNotificationEvent
+        if (notificationEvent.type !== "notification" || notificationEvent.event !== "raised") {
+          return
+        }
+        const notification = notificationEvent.notification
+        if (seenNotificationIdsRef.current.has(notification.id)) {
+          return
+        }
+        seenNotificationIdsRef.current.add(notification.id)
+        announceTaskNotification(notification)
+        toast.warning(notification.title, {
+          description: notification.message,
+          duration: 30_000,
+        })
+      }
+      socket.onerror = () => socket?.close()
+      socket.onclose = () => {
+        if (disposed) {
+          return
+        }
+        retryCount += 1
+        retryTimer = window.setTimeout(connect, Math.min(1000 + retryCount * 250, 5000))
+      }
+    }
+
+    connect()
+    return () => {
+      disposed = true
+      window.clearTimeout(retryTimer)
+      if (socket) {
+        closeWebSocket(socket)
+      }
+    }
+  }, [activeRunId])
+
+  useEffect(() => {
     if (!selectedTask) {
       return
     }
@@ -378,9 +456,28 @@ function App() {
 
     async function loadTaskConfiguration() {
       try {
-        const saved = await api.getTaskConfiguration(selectedTask.key)
+        const resourceTypes = resourceTypesForTask(selectedTask)
+        const [saved, resourceEntries] = await Promise.all([
+          api.getTaskConfiguration(selectedTask.key),
+          Promise.all(resourceTypes.map((resourceType) => api.listTaskResources(selectedTask.key, resourceType))),
+        ])
         if (!disposed) {
           setConfig({ ...defaults, ...saved.config })
+          setTaskResources((current) => ({
+            ...current,
+            ...Object.fromEntries(
+              resourceTypes.map((resourceType, index) => {
+                const field = selectedTask.config_fields.find((item) => item.resource_type === resourceType)
+                const storedResources = resourceEntries[index] ?? []
+                return [
+                  taskResourceStateKey(selectedTask.key, resourceType),
+                  storedResources.length > 0 || !field
+                    ? storedResources
+                    : legacyTaskResources(field, saved.config[field.key]),
+                ]
+              }),
+            ),
+          }))
         }
       } catch (caught) {
         if (!disposed) {
@@ -550,10 +647,18 @@ function App() {
       return
     }
 
+    void unlockTaskNotificationAudio()
+    const profileValidationError = validateProfileConfigForRun(selectedTask, selectedTaskResources)
+    if (profileValidationError) {
+      setError(profileValidationError)
+      return
+    }
+
     setError(null)
     setIsStarting(true)
 
     try {
+      await persistTaskResources(selectedTask, selectedTaskResources)
       const run = await api.createRun({
         task_key: selectedTask.key,
         vendor: selectedVendor,
@@ -599,7 +704,10 @@ function App() {
     setError(null)
     setIsSavingConfig(true)
     try {
-      await api.saveTaskConfiguration(selectedTask.key, sanitizeTaskConfig(selectedTask, config))
+      await Promise.all([
+        api.saveTaskConfiguration(selectedTask.key, sanitizeTaskConfig(selectedTask, config)),
+        persistTaskResources(selectedTask, selectedTaskResources),
+      ])
       return true
     } catch (caught) {
       setError(getErrorMessage(caught))
@@ -607,6 +715,31 @@ function App() {
     } finally {
       setIsSavingConfig(false)
     }
+  }
+
+  async function persistTaskResources(
+    task: TaskModule,
+    resources: Record<string, TaskResourceRecord[]>,
+  ) {
+    const savedEntries = await Promise.all(
+      resourceTypesForTask(task).map(async (resourceType) => [
+        resourceType,
+        await api.replaceTaskResources(
+          task.key,
+          resourceType,
+          resourcesForPersistence(task, resourceType, resources[resourceType] ?? []),
+        ),
+      ] as const),
+    )
+    setTaskResources((current) => ({
+      ...current,
+      ...Object.fromEntries(
+        savedEntries.map(([resourceType, savedResources]) => [
+          taskResourceStateKey(task.key, resourceType),
+          savedResources,
+        ]),
+      ),
+    }))
   }
 
   function exportTaskConfig() {
@@ -762,6 +895,7 @@ function App() {
         selectedVendor={selectedVendor}
         concurrency={concurrency}
         config={config}
+        resources={selectedTaskResources}
         activeRun={activeRun && isRunActive(activeRun) ? activeRun : null}
         isStarting={isStarting}
         isStopping={isStopping}
@@ -770,6 +904,15 @@ function App() {
         onVendorChange={setSelectedVendor}
         onConcurrencyChange={setConcurrency}
         onConfigChange={setConfig}
+        onResourcesChange={(resourceType, resources) => {
+          if (!selectedTask) {
+            return
+          }
+          setTaskResources((current) => ({
+            ...current,
+            [taskResourceStateKey(selectedTask.key, resourceType)]: resources,
+          }))
+        }}
         onConfigSave={() => saveTaskConfig()}
         onConfigExport={exportTaskConfig}
         onConfigImport={(file) => void importTaskConfig(file)}
@@ -911,6 +1054,7 @@ function App() {
           setUpdateCheckRequestId((current) => current + 1)
         }}
       />
+      <Toaster position="top-right" />
     </main>
   )
 }
@@ -985,6 +1129,7 @@ function TaskLauncher({
   selectedVendor,
   concurrency,
   config,
+  resources,
   activeRun,
   isStarting,
   isStopping,
@@ -992,6 +1137,7 @@ function TaskLauncher({
   onTaskChange,
   onConcurrencyChange,
   onConfigChange,
+  onResourcesChange,
   onConfigSave,
   onConfigExport,
   onConfigImport,
@@ -1008,6 +1154,7 @@ function TaskLauncher({
   selectedVendor: string
   concurrency: number
   config: Record<string, unknown>
+  resources: Record<string, TaskResourceRecord[]>
   activeRun: TaskRun | null
   isStarting: boolean
   isStopping: boolean
@@ -1015,6 +1162,7 @@ function TaskLauncher({
   onTaskChange: (value: string) => void
   onConcurrencyChange: (value: number) => void
   onConfigChange: (value: Record<string, unknown>) => void
+  onResourcesChange: (resourceType: string, resources: TaskResourceRecord[]) => void
   onConfigSave: () => Promise<boolean>
   onConfigExport: () => void
   onConfigImport: (file: File) => void
@@ -1108,7 +1256,7 @@ function TaskLauncher({
             </div>
             <div className="flex flex-wrap gap-2">
               {configBlocks.map((block) => {
-                const stats = getBlockStats(block, config)
+                const stats = getBlockStats(block, config, resources)
                 return (
                   <Badge key={block.name} variant={stats.missingRequired > 0 ? "outline" : "secondary"}>
                     {block.name} {stats.completedRequired}/{stats.required}
@@ -1133,11 +1281,14 @@ function TaskLauncher({
 
       <TaskConfigSheet
         open={isConfigOpen}
+        taskKey={selectedTask?.key ?? ""}
         blocks={configBlocks}
         config={config}
+        resources={resources}
         isSaving={isSavingConfig}
         onOpenChange={setIsConfigOpen}
         onConfigChange={onConfigChange}
+        onResourcesChange={onResourcesChange}
         onConfigExport={onConfigExport}
         onConfigImport={onConfigImport}
         onDone={async () => {
@@ -1166,21 +1317,27 @@ interface TaskConfigBlock {
 
 function TaskConfigSheet({
   open,
+  taskKey,
   blocks,
   config,
+  resources,
   isSaving,
   onOpenChange,
   onConfigChange,
+  onResourcesChange,
   onConfigExport,
   onConfigImport,
   onDone,
 }: {
   open: boolean
+  taskKey: string
   blocks: TaskConfigBlock[]
   config: Record<string, unknown>
+  resources: Record<string, TaskResourceRecord[]>
   isSaving: boolean
   onOpenChange: (value: boolean) => void
   onConfigChange: (value: Record<string, unknown>) => void
+  onResourcesChange: (resourceType: string, resources: TaskResourceRecord[]) => void
   onConfigExport: () => void
   onConfigImport: (file: File) => void
   onDone: () => void
@@ -1234,21 +1391,34 @@ function TaskConfigSheet({
                   <Badge variant="outline">{activeBlock.fields.length}</Badge>
                 </div>
                 <Separator />
-                <FieldGroup>
-                  {activeBlock.fields.map((field) => (
-                    <TaskConfigControl
-                      key={field.key}
-                      field={field}
-                      value={config[field.key]}
-                      onChange={(value) =>
-                        onConfigChange({
-                          ...config,
-                          [field.key]: value,
-                        })
-                      }
-                    />
-                  ))}
-                </FieldGroup>
+                {activeBlock.fields.some((field) => field.tab) ? (
+                  <TaskConfigTabs
+                    taskKey={taskKey}
+                    fields={activeBlock.fields}
+                    config={config}
+                    resources={resources}
+                    onConfigChange={onConfigChange}
+                    onResourcesChange={onResourcesChange}
+                  />
+                ) : (
+                  <FieldGroup>
+                    {activeBlock.fields.map((field) => (
+                      <TaskConfigControl
+                        key={field.key}
+                        taskKey={taskKey}
+                        field={field}
+                        value={field.resource_type ? resources[field.resource_type] ?? [] : config[field.key]}
+                        onChange={(value) => {
+                          if (field.resource_type) {
+                            onResourcesChange(field.resource_type, value as TaskResourceRecord[])
+                            return
+                          }
+                          onConfigChange({ ...config, [field.key]: value })
+                        }}
+                      />
+                    ))}
+                  </FieldGroup>
+                )}
               </FieldSet>
             ) : (
               <div className="p-4 text-sm text-muted-foreground">暂无配置分组。</div>
@@ -1291,6 +1461,90 @@ function TaskConfigSheet({
         </SheetFooter>
       </SheetContent>
     </Sheet>
+  )
+}
+
+function TaskConfigTabs({
+  taskKey,
+  fields,
+  config,
+  resources,
+  onConfigChange,
+  onResourcesChange,
+}: {
+  taskKey: string
+  fields: TaskConfigField[]
+  config: Record<string, unknown>
+  resources: Record<string, TaskResourceRecord[]>
+  onConfigChange: (value: Record<string, unknown>) => void
+  onResourcesChange: (resourceType: string, resources: TaskResourceRecord[]) => void
+}) {
+  const tabNames = useMemo(() => Array.from(new Set(fields.map((field) => field.tab).filter(Boolean))), [fields])
+  const standaloneFields = fields.filter((field) => !field.tab)
+  const [activeTab, setActiveTab] = useState(tabNames[0] ?? "")
+
+  useEffect(() => {
+    if (!tabNames.includes(activeTab)) {
+      setActiveTab(tabNames[0] ?? "")
+    }
+  }, [activeTab, tabNames])
+
+  if (tabNames.length === 0) {
+    return null
+  }
+
+  return (
+    <Tabs value={activeTab} onValueChange={setActiveTab}>
+      {standaloneFields.length > 0 ? (
+        <FieldGroup>
+          {standaloneFields.map((field) => (
+            <TaskConfigControl
+              key={field.key}
+              taskKey={taskKey}
+              field={field}
+              value={field.resource_type ? resources[field.resource_type] ?? [] : config[field.key]}
+              onChange={(value) => {
+                if (field.resource_type) {
+                  onResourcesChange(field.resource_type, value as TaskResourceRecord[])
+                  return
+                }
+                onConfigChange({ ...config, [field.key]: value })
+              }}
+            />
+          ))}
+        </FieldGroup>
+      ) : null}
+      <TabsList variant="line" className="w-full justify-start overflow-x-auto overflow-y-hidden">
+        {tabNames.map((tab) => (
+          <TabsTrigger key={tab} value={tab} className="shrink-0 capitalize">
+            {tab}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      {tabNames.map((tab) => (
+        <TabsContent key={tab} value={tab} className="pt-4">
+          <FieldGroup>
+            {fields
+              .filter((field) => field.tab === tab)
+              .map((field) => (
+                <TaskConfigControl
+                  key={field.key}
+                  taskKey={taskKey}
+                  field={field}
+                  value={field.resource_type ? resources[field.resource_type] ?? [] : config[field.key]}
+                  onChange={(value) => {
+                    if (field.resource_type) {
+                      onResourcesChange(field.resource_type, value as TaskResourceRecord[])
+                      return
+                    }
+                    onConfigChange({ ...config, [field.key]: value })
+                  }}
+                />
+              ))}
+          </FieldGroup>
+        </TabsContent>
+      ))}
+    </Tabs>
   )
 }
 
@@ -1462,7 +1716,7 @@ function ResultTableBlock({
 
       <div className="p-3">
         <TooltipProvider>
-          <Table className="table-fixed">
+          <Table className="min-w-[880px] table-fixed">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-24">状态</TableHead>
@@ -1875,17 +2129,25 @@ function UpdateDialog({
 }
 
 function TaskConfigControl({
+  taskKey,
   field,
   value,
   onChange,
 }: {
+  taskKey: string
   field: TaskConfigField
   value: unknown
   onChange: (value: unknown) => void
 }) {
+  if (field.resource_type) {
+    return <TaskResourceConfigControl taskKey={taskKey} field={field} resources={normalizeTaskResources(value)} onChange={onChange} />
+  }
+
   const id = `task-config-${field.key}`
   const stringValue = value === undefined || value === null ? "" : String(value)
-  const lineCount = field.key === "cards" ? countNonEmptyLines(stringValue) : null
+  const lineCount = ["cards", "profile_phone", "profile_email"].includes(field.key)
+    ? countNonEmptyLines(stringValue)
+    : null
 
   return (
     <Field className="min-w-0">
@@ -1902,6 +2164,26 @@ function TaskConfigControl({
           onChange={(event) => onChange(event.currentTarget.value)}
           className="min-h-24 resize-y"
         />
+      ) : field.field_type === "table" ? (
+        <ProfileTableConfigControl field={field} value={value} onChange={onChange} />
+      ) : field.field_type === "toggle-group" ? (
+        <ToggleGroup
+          value={stringValue ? [stringValue] : []}
+          onValueChange={(values) => {
+            const selected = values[0]
+            if (selected) {
+              onChange(selected)
+            }
+          }}
+          spacing={0}
+          variant="outline"
+        >
+          {field.options.map((option) => (
+            <ToggleGroupItem key={option} value={option} aria-label={option}>
+              {option}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
       ) : field.field_type === "select" ? (
         <SingleSelect
           id={id}
@@ -1937,6 +2219,628 @@ function TaskConfigControl({
       {field.description ? <FieldDescription className="break-words">{field.description}</FieldDescription> : null}
     </Field>
   )
+}
+
+function TaskResourceConfigControl({
+  taskKey,
+  field,
+  resources,
+  onChange,
+}: {
+  taskKey: string
+  field: TaskConfigField
+  resources: TaskResourceRecord[]
+  onChange: (value: TaskResourceRecord[]) => void
+}) {
+  return field.field_type === "table" ? (
+    <ResourceTableConfigControl taskKey={taskKey} field={field} resources={resources} onChange={onChange} />
+  ) : (
+    <ResourceTextareaConfigControl taskKey={taskKey} field={field} resources={resources} onChange={onChange} />
+  )
+}
+
+function ResourceTextareaConfigControl({
+  taskKey,
+  field,
+  resources,
+  onChange,
+}: {
+  taskKey: string
+  field: TaskConfigField
+  resources: TaskResourceRecord[]
+  onChange: (value: TaskResourceRecord[]) => void
+}) {
+  const [draft, setDraft] = useState("")
+  const [isAdding, setIsAdding] = useState(false)
+
+  async function addResources() {
+    const sourceValues = draft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    if (sourceValues.length === 0) {
+      toast.error("没有可导入的资料")
+      return
+    }
+
+    const values = field.resource_type === "phone"
+      ? sourceValues.map(normalizeUsPhoneNumber).filter((value): value is string => Boolean(value))
+      : sourceValues
+    const invalidCount = sourceValues.length - values.length
+    if (values.length === 0) {
+      toast.error("没有可导入的有效资料", {
+        description: formatImportSummary(sourceValues.length, 0, invalidCount),
+      })
+      return
+    }
+
+    setIsAdding(true)
+    try {
+      const savedResources = await api.appendTaskResources(
+        taskKey,
+        field.resource_type,
+        values.map((value) => ({ payload: { value } })),
+      )
+      onChange(savedResources)
+      setDraft("")
+      toast.success("资料已导入", {
+        description: formatImportSummary(sourceValues.length, values.length, invalidCount),
+      })
+    } catch (caught) {
+      toast.error("资料导入失败", { description: getErrorMessage(caught) })
+    } finally {
+      setIsAdding(false)
+    }
+  }
+
+  return (
+    <Field className="min-w-0">
+      <FieldLabel htmlFor={`task-config-${field.key}`} className="flex-wrap">
+        <span className="min-w-0 break-words">{field.label}</span>
+        <Badge variant="secondary">{resources.length} 行</Badge>
+        {field.required ? <Badge variant="outline">必填</Badge> : null}
+      </FieldLabel>
+      <Textarea
+        id={`task-config-${field.key}`}
+        value={draft}
+        placeholder={field.placeholder}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        className="min-h-24 resize-y"
+      />
+      <div className="flex justify-end">
+        <Button type="button" size="sm" onClick={() => void addResources()} disabled={isAdding || !taskKey}>
+          {isAdding ? "正在导入" : "添加资料"}
+        </Button>
+      </div>
+      <ResourceUsageTable resources={resources} valueColumn={field.label} />
+      {field.description ? <FieldDescription className="break-words">{field.description}</FieldDescription> : null}
+    </Field>
+  )
+}
+
+function ResourceTableConfigControl({
+  taskKey,
+  field,
+  resources,
+  onChange,
+}: {
+  taskKey: string
+  field: TaskConfigField
+  resources: TaskResourceRecord[]
+  onChange: (value: TaskResourceRecord[]) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [importError, setImportError] = useState("")
+  const [isImporting, setIsImporting] = useState(false)
+  const [editingRow, setEditingRow] = useState<number | null>(null)
+  const columns = field.table_columns.length > 0 ? field.table_columns : [...REQUIRED_PROFILE_USER_COLUMNS]
+
+  async function importFile(file: File) {
+    setImportError("")
+    setIsImporting(true)
+    try {
+      const parsedRows = await parseProfileUserFile(file, columns)
+      const { rows, totalCount, invalidCount } = normalizeProfileUserImportRows(parsedRows, columns)
+      if (rows.length === 0) {
+        toast.error("没有可导入的有效资料", {
+          description: formatImportSummary(totalCount, 0, invalidCount),
+        })
+        return
+      }
+      const savedResources = await api.appendTaskResources(
+        taskKey,
+        field.resource_type,
+        rows.map((payload) => ({ payload })),
+      )
+      onChange(savedResources)
+      toast.success("资料已导入", {
+        description: formatImportSummary(totalCount, rows.length, invalidCount),
+      })
+    } catch (caught) {
+      const message = getErrorMessage(caught)
+      setImportError(message)
+      toast.error("资料导入失败", { description: message })
+    } finally {
+      setIsImporting(false)
+    }
+  }
+
+  return (
+    <TooltipProvider>
+      <Field className="min-w-0">
+        <FieldLabel className="flex-wrap">
+          <span className="min-w-0 break-words">{field.label}</span>
+          <Badge variant="secondary">{resources.length} 条资料</Badge>
+          {field.required ? <Badge variant="outline">必填</Badge> : null}
+        </FieldLabel>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv,.tsv"
+          className="sr-only"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            event.currentTarget.value = ""
+            if (file) void importFile(file)
+          }}
+        />
+        <div
+          className={cn(
+            "flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-4 text-center",
+            isDragging && "border-ring bg-muted/50",
+          )}
+          onDragEnter={(event) => {
+            event.preventDefault()
+            setIsDragging(true)
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={(event) => {
+            event.preventDefault()
+            setIsDragging(false)
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            setIsDragging(false)
+            const file = event.dataTransfer.files[0]
+            if (file) void importFile(file)
+          }}
+        >
+          <div className="text-sm text-muted-foreground">拖入资料文件，或从本地选择文件。</div>
+          <Button type="button" variant="outline" size="sm" onClick={() => inputRef.current?.click()} disabled={isImporting || !taskKey}>
+            <UploadIcon data-icon="inline-start" />
+            {isImporting ? "正在导入" : "导入资料"}
+          </Button>
+        </div>
+        {importError ? (
+          <Alert variant="destructive">
+            <AlertTitle>资料导入失败</AlertTitle>
+            <AlertDescription>{importError}</AlertDescription>
+          </Alert>
+        ) : null}
+        <div className="rounded-lg border">
+          <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+            <div className="text-sm text-muted-foreground">{resources.length} 条资料</div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={downloadProfileUserTemplate}>
+                <DownloadIcon data-icon="inline-start" />
+                下载模板
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onChange([...resources, createDraftResource(field.resource_type, emptyProfileUserRow(columns))])
+                  setEditingRow(resources.length)
+                }}
+              >
+                <PlusIcon data-icon="inline-start" />
+                添加资料
+              </Button>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <Table className="min-w-[880px] table-fixed">
+              <TableHeader>
+                <TableRow>
+                  {columns.map((column) => <TableHead key={column}>{column}</TableHead>)}
+                  <TableHead>状态</TableHead>
+                  <TableHead className="w-10" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+              {resources.map((resource, rowIndex) => (
+                <TableRow key={resource.id || `draft-${rowIndex}`}>
+                  {columns.map((column) => (
+                    <TableCell key={column}>
+                      {editingRow === rowIndex ? (
+                        <Input
+                          aria-label={`${column} 第 ${rowIndex + 1} 行`}
+                          value={stringifyProfileValue(resource.payload[column])}
+                          disabled={resource.state === "reserved"}
+                          onChange={(event) => onChange(updateResourcePayload(resources, rowIndex, column, event.currentTarget.value))}
+                        />
+                      ) : (
+                        <ResultTableCellText value={stringifyProfileValue(resource.payload[column])} className="max-w-48" />
+                      )}
+                    </TableCell>
+                  ))}
+                  <TableCell><ResourceStateBadge resource={resource} /></TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1">
+                      <Tooltip>
+                        <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" aria-label={`编辑第 ${rowIndex + 1} 行资料`} disabled={resource.state === "reserved"} onClick={() => setEditingRow(editingRow === rowIndex ? null : rowIndex)}>{editingRow === rowIndex ? <CheckIcon /> : <PencilIcon />}</Button>} />
+                        <TooltipContent>{editingRow === rowIndex ? "完成编辑" : "编辑资料"}</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" aria-label={`删除第 ${rowIndex + 1} 行资料`} disabled={resource.state === "reserved"} onClick={() => onChange(resources.filter((_, index) => index !== rowIndex))}><Trash2Icon /></Button>} />
+                        <TooltipContent>删除资料</TooltipContent>
+                      </Tooltip>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {resources.length === 0 ? <TableRow><TableCell colSpan={columns.length + 2} className="py-8 text-center text-muted-foreground">暂无资料。</TableCell></TableRow> : null}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+        {field.description ? <FieldDescription className="break-words">{field.description}</FieldDescription> : null}
+      </Field>
+    </TooltipProvider>
+  )
+}
+
+function ResourceUsageTable({ resources, valueColumn }: { resources: TaskResourceRecord[]; valueColumn: string }) {
+  return (
+    <TooltipProvider>
+      <div className="overflow-x-auto rounded-lg border">
+        <Table className="table-fixed">
+          <TableHeader><TableRow><TableHead>{valueColumn}</TableHead><TableHead>状态</TableHead></TableRow></TableHeader>
+          <TableBody>
+            {resources.map((resource, index) => <TableRow key={resource.id || `draft-${index}`}><TableCell><ResultTableCellText value={stringifyProfileValue(resource.payload.value)} /></TableCell><TableCell><ResourceStateBadge resource={resource} /></TableCell></TableRow>)}
+            {resources.length === 0 ? <TableRow><TableCell colSpan={2} className="py-4 text-center text-muted-foreground">暂无资料。</TableCell></TableRow> : null}
+          </TableBody>
+        </Table>
+      </div>
+    </TooltipProvider>
+  )
+}
+
+function ResourceStateBadge({ resource }: { resource: TaskResourceRecord }) {
+  const label = resource.state === "used" ? "已使用" : resource.state === "reserved" ? "使用中" : "可用"
+  return <Badge variant={resource.state === "used" ? "secondary" : resource.state === "reserved" ? "outline" : "secondary"}>{label}</Badge>
+}
+
+function normalizeTaskResources(value: unknown): TaskResourceRecord[] {
+  return Array.isArray(value) ? value.filter(isTaskResourceRecord) : []
+}
+
+function isTaskResourceRecord(value: unknown): value is TaskResourceRecord {
+  return isRecord(value) && typeof value.id === "string" && isRecord(value.payload) && typeof value.resource_type === "string" && typeof value.state === "string"
+}
+
+function createDraftResource(resourceType: string, payload: Record<string, unknown>): TaskResourceRecord {
+  return { id: "", resource_type: resourceType, payload, state: "available", used: false, created_at: "", updated_at: "", used_at: null }
+}
+
+function updateResourcePayload(resources: TaskResourceRecord[], rowIndex: number, key: string, value: string) {
+  return resources.map((resource, index) => index === rowIndex ? { ...resource, payload: { ...resource.payload, [key]: value } } : resource)
+}
+
+const REQUIRED_PROFILE_USER_COLUMNS = ["name", "address", "city", "state", "zipcode", "phone"] as const
+
+type ProfileUserRow = Record<string, string>
+
+function ProfileTableConfigControl({
+  field,
+  value,
+  onChange,
+}: {
+  field: TaskConfigField
+  value: unknown
+  onChange: (value: unknown) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [importError, setImportError] = useState("")
+  const columns = field.table_columns.length > 0 ? field.table_columns : [...REQUIRED_PROFILE_USER_COLUMNS]
+  const rows = normalizeProfileUserRows(value, columns)
+
+  async function importFile(file: File) {
+    setImportError("")
+    try {
+      onChange(await parseProfileUserFile(file, columns))
+    } catch (caught) {
+      setImportError(getErrorMessage(caught))
+    }
+  }
+
+  function updateCell(rowIndex: number, column: string, nextValue: string) {
+    onChange(
+      rows.map((row, index) => (index === rowIndex ? { ...row, [column]: nextValue } : row)),
+    )
+  }
+
+  function addRow() {
+    onChange([...rows, emptyProfileUserRow(columns)])
+  }
+
+  function removeRow(rowIndex: number) {
+    onChange(rows.filter((_, index) => index !== rowIndex))
+  }
+
+  return (
+    <TooltipProvider>
+      <div className="flex flex-col gap-3">
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv,.tsv"
+          className="sr-only"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            event.currentTarget.value = ""
+            if (file) {
+              void importFile(file)
+            }
+          }}
+        />
+        <div
+          className={cn(
+            "flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-4 text-center",
+            isDragging && "border-ring bg-muted/50",
+          )}
+          onDragEnter={(event) => {
+            event.preventDefault()
+            setIsDragging(true)
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={(event) => {
+            event.preventDefault()
+            setIsDragging(false)
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            setIsDragging(false)
+            const file = event.dataTransfer.files[0]
+            if (file) {
+              void importFile(file)
+            }
+          }}
+        >
+          <div className="text-sm text-muted-foreground">拖入资料文件，或从本地选择文件。</div>
+          <Button type="button" variant="outline" size="sm" onClick={() => inputRef.current?.click()}>
+            <UploadIcon data-icon="inline-start" />
+            选择资料文件
+          </Button>
+        </div>
+        {importError ? (
+          <Alert variant="destructive">
+            <AlertTitle>资料导入失败</AlertTitle>
+            <AlertDescription>{importError}</AlertDescription>
+          </Alert>
+        ) : null}
+        <div className="rounded-lg border">
+          <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+            <div className="text-sm text-muted-foreground">{rows.length} 条资料</div>
+            <Button type="button" variant="outline" size="sm" onClick={addRow}>
+              <PlusIcon data-icon="inline-start" />
+              添加资料
+            </Button>
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                {columns.map((column) => (
+                  <TableHead key={column}>{column}</TableHead>
+                ))}
+                <TableHead className="w-10" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row, rowIndex) => (
+                <TableRow key={`profile-row-${rowIndex}`}>
+                  {columns.map((column) => (
+                    <TableCell key={column}>
+                      <Input
+                        aria-label={`${column} 第 ${rowIndex + 1} 行`}
+                        value={row[column] ?? ""}
+                        onChange={(event) => updateCell(rowIndex, column, event.currentTarget.value)}
+                      />
+                    </TableCell>
+                  ))}
+                  <TableCell>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={`删除第 ${rowIndex + 1} 行资料`}
+                            onClick={() => removeRow(rowIndex)}
+                          >
+                            <Trash2Icon />
+                          </Button>
+                        }
+                      />
+                      <TooltipContent>删除资料</TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {rows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={columns.length + 1} className="py-8 text-center text-muted-foreground">
+                    暂无资料。
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+    </TooltipProvider>
+  )
+}
+
+function emptyProfileUserRow(columns: string[]): ProfileUserRow {
+  return Object.fromEntries(columns.map((column) => [column, ""]))
+}
+
+function normalizeProfileUserRows(value: unknown, columns: string[]): ProfileUserRow[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .filter(isRecord)
+    .map((row) =>
+      Object.fromEntries(columns.map((column) => [column, stringifyProfileValue(row[column])])),
+    )
+}
+
+async function parseProfileUserFile(file: File, columns: string[]): Promise<ProfileUserRow[]> {
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", raw: false })
+  const firstSheetName = workbook.SheetNames[0]
+  if (!firstSheetName) {
+    throw new Error("资料文件不包含工作表。")
+  }
+
+  const worksheet = workbook.Sheets[firstSheetName]
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
+    header: 1,
+    defval: "",
+    raw: false,
+  })
+  const headerRow = rows[0]
+  if (!Array.isArray(headerRow)) {
+    throw new Error("资料文件缺少表头行。")
+  }
+
+  const columnIndexes = new Map(
+    headerRow.map((header, index) => [String(header).trim().toLowerCase(), index]),
+  )
+  const missingColumns = columns.filter((column) => !columnIndexes.has(column.toLowerCase()))
+  if (missingColumns.length > 0) {
+    throw new Error(`资料表缺少列头：${missingColumns.join(", ")}。`)
+  }
+
+  const profileRows = rows.slice(1).map((sourceRow) => {
+    const cells = Array.isArray(sourceRow) ? sourceRow : []
+    return Object.fromEntries(
+      columns.map((column) => [
+        column,
+        stringifyProfileValue(cells[columnIndexes.get(column.toLowerCase()) ?? -1]),
+      ]),
+    )
+  })
+  const nonEmptyRows = profileRows.filter((row) => columns.some((column) => row[column].trim()))
+  if (nonEmptyRows.length === 0) {
+    throw new Error("资料表没有可用的数据行。")
+  }
+  return nonEmptyRows
+}
+
+function normalizeProfileUserImportRows(rows: ProfileUserRow[], columns: string[]) {
+  const normalizedRows: ProfileUserRow[] = []
+  let invalidCount = 0
+
+  for (const row of rows) {
+    const normalized = normalizeProfileUserRow(row, columns)
+    if (normalized) {
+      normalizedRows.push(normalized)
+    } else {
+      invalidCount += 1
+    }
+  }
+
+  return { rows: normalizedRows, totalCount: rows.length, invalidCount }
+}
+
+function resourcesForPersistence(
+  task: TaskModule,
+  resourceType: string,
+  resources: TaskResourceRecord[],
+) {
+  if (task.key !== "overchargedforpork" || resourceType !== "user") {
+    return resources
+  }
+
+  const columns = task.config_fields.find((field) => field.resource_type === resourceType)?.table_columns
+    ?? [...REQUIRED_PROFILE_USER_COLUMNS]
+  return resources.flatMap((resource) => {
+    if (resource.id) {
+      return [resource]
+    }
+    const payload = normalizeProfileUserRow(
+      Object.fromEntries(Object.entries(resource.payload).map(([key, value]) => [key, stringifyProfileValue(value)])),
+      columns,
+    )
+    return payload ? [{ ...resource, payload }] : []
+  })
+}
+
+function normalizeProfileUserRow(row: ProfileUserRow, columns: string[]): ProfileUserRow | null {
+  const values = Object.fromEntries(columns.map((column) => [column, stringifyProfileValue(row[column])]))
+  if (!REQUIRED_PROFILE_USER_COLUMNS.every((column) => values[column])) {
+    return null
+  }
+
+  const name = values.name.replace(/\s+/g, " ").trim()
+  const state = normalizeUsState(values.state)
+  const zipcode = normalizeUsZipcode(values.zipcode)
+  const phone = normalizeUsPhoneNumber(values.phone)
+  if (name.split(" ").length < 2 || !state || !zipcode || !phone) {
+    return null
+  }
+
+  return { ...values, name, state, zipcode, phone }
+}
+
+function normalizeUsState(value: string): string | null {
+  return US_STATE_CODES[value.toUpperCase().replace(/[^A-Z]/g, "")] ?? null
+}
+
+function normalizeUsZipcode(value: string): string | null {
+  const match = value.trim().match(/^(\d{4,5})(?:\.0+)?$/)
+  if (!match) {
+    return null
+  }
+  return match[1].padStart(5, "0")
+}
+
+function normalizeUsPhoneNumber(value: string): string | null {
+  const digits = value.replace(/\D/g, "")
+  const normalized = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits
+  return /^\d{10}$/.test(normalized) ? normalized : null
+}
+
+function formatImportSummary(totalCount: number, availableCount: number, invalidCount: number) {
+  return `总计 ${totalCount} 条；可用 ${availableCount} 条；无效 ${invalidCount} 条。`
+}
+
+function downloadProfileUserTemplate() {
+  downloadTextFile("user-profile-template.csv", `${REQUIRED_PROFILE_USER_COLUMNS.join(",")}\n`, "text/csv;charset=utf-8")
+}
+
+const US_STATE_CODES: Record<string, string> = {
+  AL: "AL", ALABAMA: "AL", AK: "AK", ALASKA: "AK", AZ: "AZ", ARIZONA: "AZ", AR: "AR", ARKANSAS: "AR",
+  CA: "CA", CALIFORNIA: "CA", CO: "CO", COLORADO: "CO", CT: "CT", CONNECTICUT: "CT", DE: "DE", DELAWARE: "DE",
+  FL: "FL", FLORIDA: "FL", GA: "GA", GEORGIA: "GA", HI: "HI", HAWAII: "HI", ID: "ID", IDAHO: "ID",
+  IL: "IL", ILLINOIS: "IL", IN: "IN", INDIANA: "IN", IA: "IA", IOWA: "IA", KS: "KS", KANSAS: "KS",
+  KY: "KY", KENTUCKY: "KY", LA: "LA", LOUISIANA: "LA", ME: "ME", MAINE: "ME", MD: "MD", MARYLAND: "MD",
+  MA: "MA", MASSACHUSETTS: "MA", MI: "MI", MICHIGAN: "MI", MN: "MN", MINNESOTA: "MN", MS: "MS", MISSISSIPPI: "MS",
+  MO: "MO", MISSOURI: "MO", MT: "MT", MONTANA: "MT", NE: "NE", NEBRASKA: "NE", NV: "NV", NEVADA: "NV",
+  NH: "NH", NEWHAMPSHIRE: "NH", NJ: "NJ", NEWJERSEY: "NJ", NM: "NM", NEWMEXICO: "NM", NY: "NY", NEWYORK: "NY",
+  NC: "NC", NORTHCAROLINA: "NC", ND: "ND", NORTHDAKOTA: "ND", OH: "OH", OHIO: "OH", OK: "OK", OKLAHOMA: "OK",
+  OR: "OR", OREGON: "OR", PA: "PA", PENNSYLVANIA: "PA", RI: "RI", RHODEISLAND: "RI", SC: "SC", SOUTHCAROLINA: "SC",
+  SD: "SD", SOUTHDAKOTA: "SD", TN: "TN", TENNESSEE: "TN", TX: "TX", TEXAS: "TX", UT: "UT", UTAH: "UT",
+  VT: "VT", VERMONT: "VT", VA: "VA", VIRGINIA: "VA", WA: "WA", WASHINGTON: "WA", WV: "WV", WESTVIRGINIA: "WV",
+  WI: "WI", WISCONSIN: "WI", WY: "WY", WYOMING: "WY", DC: "DC", DISTRICTOFCOLUMBIA: "DC",
+}
+
+function stringifyProfileValue(value: unknown) {
+  return value === undefined || value === null ? "" : String(value).trim()
 }
 
 function TaskConfigMultiSelect({
@@ -2236,9 +3140,17 @@ function normalizeBlockName(field: TaskConfigField) {
   return "任务"
 }
 
-function getBlockStats(block: TaskConfigBlock, config: Record<string, unknown>) {
+function getBlockStats(
+  block: TaskConfigBlock,
+  config: Record<string, unknown>,
+  resources: Record<string, TaskResourceRecord[]>,
+) {
   const requiredFields = block.fields.filter((field) => field.required)
-  const completedRequired = requiredFields.filter((field) => isFilled(config[field.key])).length
+  const completedRequired = requiredFields.filter((field) =>
+    field.resource_type
+      ? (resources[field.resource_type] ?? []).some((resource) => resource.state === "available")
+      : isFilled(config[field.key]),
+  ).length
   return {
     required: requiredFields.length,
     completedRequired,
@@ -2256,10 +3168,29 @@ function isFilled(value: unknown) {
   return value !== undefined && value !== null && value !== ""
 }
 
+function validateProfileConfigForRun(task: TaskModule, resources: Record<string, TaskResourceRecord[]>) {
+  if (task.key !== "overchargedforpork") {
+    return ""
+  }
+
+  const hasUsableUser = (resources.user ?? []).some((resource) =>
+    resource.state === "available" && REQUIRED_PROFILE_USER_COLUMNS.every((column) => stringifyProfileValue(resource.payload[column]).length > 0),
+  )
+  if (!hasUsableUser) {
+    return "资料 user 需要至少一条包含 name、address、city、state、zipcode、phone 的完整数据。"
+  }
+
+  if (!(resources.email ?? []).some((resource) => resource.state === "available" && stringifyProfileValue(resource.payload.value))) {
+    return "资料 email 需要至少一条可用邮箱数据。"
+  }
+
+  return ""
+}
+
 function defaultConfigForTask(task: TaskModule) {
   const defaults: Record<string, unknown> = {}
   for (const field of task.config_fields) {
-    if (field.default !== null && field.default !== undefined) {
+    if (!field.resource_type && field.default !== null && field.default !== undefined) {
       defaults[field.key] = field.default
     }
   }
@@ -2267,8 +3198,28 @@ function defaultConfigForTask(task: TaskModule) {
 }
 
 function sanitizeTaskConfig(task: TaskModule, config: Record<string, unknown>) {
-  const allowedKeys = new Set(task.config_fields.map((field) => field.key))
+  const allowedKeys = new Set(task.config_fields.filter((field) => !field.resource_type).map((field) => field.key))
   return Object.fromEntries(Object.entries(config).filter(([key]) => allowedKeys.has(key)))
+}
+
+function resourceTypesForTask(task: TaskModule) {
+  return Array.from(new Set(task.config_fields.map((field) => field.resource_type).filter(Boolean)))
+}
+
+function taskResourceStateKey(taskKey: string, resourceType: string) {
+  return `${taskKey}:${resourceType}`
+}
+
+function legacyTaskResources(field: TaskConfigField, value: unknown): TaskResourceRecord[] {
+  if (field.field_type === "table") {
+    const columns = field.table_columns.length > 0 ? field.table_columns : [...REQUIRED_PROFILE_USER_COLUMNS]
+    return normalizeProfileUserRows(value, columns).map((payload) => createDraftResource(field.resource_type, payload))
+  }
+  return String(value ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((text) => createDraftResource(field.resource_type, { value: text }))
 }
 
 function normalizeMultiSelectValue(value: unknown) {

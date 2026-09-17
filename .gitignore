@@ -36,8 +36,8 @@ plugin_uploads/
 *.db
 *.db-*
 
-# Private/local task modules
-backend/app/task_modules/uber/
+# Private/local task modules. Keep root-level test_email.py as the committed example.
+backend/app/task_modules/*/
 debug_uber_payment.py
 *.plugin.zip
 
@@ -76,3 +76,4 @@ Thumbs.db
 *.sw?
 test.html
 scripts/README.md
+.nexus-flow-data/

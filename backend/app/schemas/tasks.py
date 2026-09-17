@@ -13,6 +13,29 @@ class TaskConfigFieldResponse(BaseModel):
     placeholder: str = ""
     default: Any = None
     options: list[str] = Field(default_factory=list)
+    tab: str = ""
+    table_columns: list[str] = Field(default_factory=list)
+    resource_type: str = ""
+
+
+class TaskResourceRecordResponse(BaseModel):
+    id: str
+    resource_type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    state: str
+    used: bool
+    created_at: str
+    updated_at: str
+    used_at: str | None = None
+
+
+class TaskResourceSaveItem(BaseModel):
+    id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskResourceSaveRequest(BaseModel):
+    items: list[TaskResourceSaveItem] = Field(default_factory=list)
 
 
 class TaskResultDefinitionResponse(BaseModel):

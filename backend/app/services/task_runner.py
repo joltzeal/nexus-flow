@@ -8,6 +8,8 @@ from app.services.browser_sessions import browser_session_service
 from app.services.log_store import log_store
 from app.services.runtime_store import runtime_store
 from app.services.task_io import ArtifactWriter, ResultWriter
+from app.services.task_notifications import task_notification_service
+from app.services.task_resources import WorkItemResourceManager
 from app.task_modules.base import (
     BrowserArrangeOptions,
     BrowserOpenOptions,
@@ -96,6 +98,7 @@ async def run_task(run_id: str) -> None:
         await log_store.add(run_id, "error", f"任务运行失败：{exc}")
         raise
     finally:
+        task_notification_service.clear_run(run_id)
         await browser_session_service.cleanup_run(run_id, task_key=run.task_key)
         if runtime_store.get_run(run_id).status != "failed":
             runtime_store.finish_run(run_id)
@@ -114,6 +117,11 @@ async def run_item(run_id: str, work_item_id: str) -> None:
     def raise_current_if_stopping() -> None:
         raise_if_stopping(run_id)
 
+    resources = WorkItemResourceManager(
+        task_key=run.task_key,
+        run_id=run_id,
+        work_item_id=item.id,
+    )
     context = TaskExecutionContext(
         run_id=run_id,
         work_item_id=item.id,
@@ -132,6 +140,8 @@ async def run_item(run_id: str, work_item_id: str) -> None:
             task_key=run.task_key,
             cleanup_policy=run.cleanup_policy,
         ),
+        resources=resources,
+        notify=task_notification_service.create_writer(run_id=run_id, work_item_id=item.id),
         is_stopping=is_stopping,
         raise_if_stopping=raise_current_if_stopping,
     )
@@ -149,6 +159,7 @@ async def run_item(run_id: str, work_item_id: str) -> None:
     else:
         runtime_store.complete_item(run_id, item.id, _result_message(result))
     finally:
+        await resources.release_all()
         await browser_session_service.cleanup_work_item(
             run_id,
             item.id,

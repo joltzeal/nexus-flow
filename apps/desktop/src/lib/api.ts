@@ -1,7 +1,16 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8765"
 const WS_BASE = API_BASE.replace(/^http/, "ws")
 
-export type TaskFieldType = "text" | "password" | "number" | "textarea" | "select" | "multi-select" | "checkbox"
+export type TaskFieldType =
+  | "text"
+  | "password"
+  | "number"
+  | "textarea"
+  | "select"
+  | "multi-select"
+  | "checkbox"
+  | "table"
+  | "toggle-group"
 export type LogLevel = "info" | "warn" | "error" | "debug" | "verbose"
 
 export interface TaskConfigField {
@@ -14,6 +23,25 @@ export interface TaskConfigField {
   placeholder: string
   default: unknown
   options: string[]
+  tab: string
+  table_columns: string[]
+  resource_type: string
+}
+
+export interface TaskResourceRecord {
+  id: string
+  resource_type: string
+  payload: Record<string, unknown>
+  state: "available" | "reserved" | "used" | "deleted"
+  used: boolean
+  created_at: string
+  updated_at: string
+  used_at: string | null
+}
+
+export interface TaskResourceSaveItem {
+  id?: string
+  payload: Record<string, unknown>
 }
 
 export interface TaskResultDefinition {
@@ -113,6 +141,27 @@ export interface TaskRunLog {
   timestamp: string
   work_item_id: string | null
   browser_session_id: string | null
+}
+
+export interface TaskRunNotification {
+  id: string
+  run_id: string
+  work_item_id: string
+  browser_session_id: string | null
+  kind: "manual_action"
+  title: string
+  message: string
+  speech: string
+  sound: string
+  dedupe_key: string
+  requires_ack: boolean
+  created_at: string
+}
+
+export interface TaskRunNotificationEvent {
+  type: "notification"
+  event: "raised" | "resolved"
+  notification: TaskRunNotification
 }
 
 export interface TaskRun {
@@ -312,6 +361,18 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ config }),
     }),
+  listTaskResources: (taskKey: string, resourceType: string) =>
+    apiFetch<TaskResourceRecord[]>(`/api/tasks/${taskKey}/resources/${resourceType}`),
+  replaceTaskResources: (taskKey: string, resourceType: string, items: TaskResourceSaveItem[]) =>
+    apiFetch<TaskResourceRecord[]>(`/api/tasks/${taskKey}/resources/${resourceType}`, {
+      method: "PUT",
+      body: JSON.stringify({ items }),
+    }),
+  appendTaskResources: (taskKey: string, resourceType: string, items: TaskResourceSaveItem[]) =>
+    apiFetch<TaskResourceRecord[]>(`/api/tasks/${taskKey}/resources/${resourceType}`, {
+      method: "POST",
+      body: JSON.stringify({ items }),
+    }),
   listRuns: () => apiFetch<TaskRun[]>("/api/tasks/runs"),
   listRunLogs: (runId: string, limit = 1000) =>
     apiFetch<TaskRunLog[]>(`/api/tasks/runs/${runId}/logs?limit=${limit}`),
@@ -327,6 +388,7 @@ export const api = {
     apiFetch<TaskArtifact[]>(`/api/tasks/${taskKey}/artifacts`),
   runsWsUrl: () => `${WS_BASE}/api/tasks/runs/ws`,
   runLogsWsUrl: (runId: string) => `${WS_BASE}/api/tasks/runs/${runId}/logs/ws`,
+  runNotificationsWsUrl: (runId: string) => `${WS_BASE}/api/tasks/runs/${runId}/notifications/ws`,
   createRun: (payload: CreateTaskRunPayload) =>
     apiFetch<TaskRun>("/api/tasks/runs", {
       method: "POST",

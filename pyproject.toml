@@ -1,6 +1,6 @@
 [project]
 name = "nexus-flow"
-version = "0.2.0"
+version = "0.2.6"
 description = "Desktop automation task console with dynamic Python plugins, browser orchestration, live logs, results, and artifacts."
 readme = "README.md"
 requires-python = ">=3.13"

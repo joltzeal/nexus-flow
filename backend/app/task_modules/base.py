@@ -6,7 +6,17 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 
-TaskFieldType = Literal["text", "password", "number", "textarea", "select", "multi-select", "checkbox"]
+TaskFieldType = Literal[
+    "text",
+    "password",
+    "number",
+    "textarea",
+    "select",
+    "multi-select",
+    "checkbox",
+    "table",
+    "toggle-group",
+]
 LogLevel = Literal["info", "warn", "error", "debug", "verbose"]
 BrowserCleanupAction = Literal["keep_open", "close", "delete"]
 
@@ -22,6 +32,11 @@ class TaskConfigField:
     placeholder: str = ""
     default: Any = None
     options: list[str] = field(default_factory=list)
+    tab: str = ""
+    table_columns: list[str] = field(default_factory=list)
+    resource_type: str = ""
+
+
 
 
 @dataclass(slots=True)
@@ -162,6 +177,52 @@ class BrowserSessionManager(Protocol):
         ...
 
 
+@dataclass(slots=True, frozen=True)
+class TaskResource:
+    id: str
+    resource_type: str
+    payload: dict[str, Any]
+    state: str
+    used: bool
+
+
+@dataclass(slots=True, frozen=True)
+class ResourceClaim:
+    allocation_id: str
+    resource: TaskResource
+
+
+class TaskResourceManager(Protocol):
+    async def claim(self, resource_types: Sequence[str]) -> list[ResourceClaim]:
+        ...
+
+    async def mark_used(self, allocation_ids: Sequence[str]) -> None:
+        ...
+
+    async def release(self, allocation_ids: Sequence[str]) -> None:
+        ...
+
+
+class TaskNotificationWriter(Protocol):
+    """Frontend attention requests emitted by a task module at runtime."""
+
+    async def manual_action(
+        self,
+        *,
+        title: str,
+        message: str,
+        speech: str = "",
+        sound: str = "ding",
+        dedupe_key: str = "",
+        requires_ack: bool = False,
+        browser_session_id: str | None = None,
+    ) -> str:
+        ...
+
+    async def resolve(self, notification_id: str) -> None:
+        ...
+
+
 @dataclass(slots=True)
 class TaskExecutionContext:
     run_id: str
@@ -175,6 +236,8 @@ class TaskExecutionContext:
     results: ResultWriter
     artifacts: ArtifactWriter
     browser: BrowserSessionManager
+    resources: TaskResourceManager
+    notify: TaskNotificationWriter
     is_stopping: Callable[[], bool]
     raise_if_stopping: Callable[[], None]
 
@@ -188,6 +251,10 @@ class AutomationTaskModule(ABC):
 
     def build_work_items(self, config: dict[str, Any]) -> Sequence[WorkItemSpec]:
         return [WorkItemSpec(key="default", input=dict(config), label="默认任务项")]
+
+    def validate_config(self, config: dict[str, Any]) -> None:
+        """Validate configuration before a run is created."""
+        return None
 
     @abstractmethod
     async def run(self, context: TaskExecutionContext) -> TaskResult | dict[str, Any] | None:

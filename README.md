@@ -25,25 +25,62 @@ Nexus Flow 是一个桌面端自动化任务控制台，使用 Tauri + React 构
 
 ## 本地开发
 
-安装 Python 依赖：
+### 环境要求
+
+- Python `3.13+`、[uv](https://docs.astral.sh/uv/)
+- Node.js `22+`、pnpm `10+`
+- Tauri 2 的本机依赖（Rust、系统 WebView 等），详见 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+
+首次运行时，在项目根目录安装 Python 依赖，并在桌面端安装前端依赖：
 
 ```bash
 uv sync --group dev
-```
-
-安装前端依赖：
-
-```bash
 cd apps/desktop
 pnpm install
+cd ../..
 ```
 
-启动桌面开发环境：
+复制环境变量模板（已有 `.env` 时可跳过），并按需修改：
+
+```bash
+cp .env.example .env
+```
+
+开发环境需要分别启动后端和桌面前端。Tauri 调试构建不会启动发布版 sidecar，因此请保持两个终端都在运行。
+
+终端 1：启动 FastAPI 后端（默认监听 `127.0.0.1:8765`）：
+
+```bash
+PYTHONPATH=backend uv run python -m app.run
+```
+
+如果需要把运行数据放在项目目录，避免写入系统应用数据目录，可以显式设置：
+
+```bash
+NEXUS_FLOW_DATA_DIR="$PWD/.nexus-flow-data" PYTHONPATH=backend uv run python -m app.run
+```
+
+终端 2：启动 Tauri + React 前端：
 
 ```bash
 cd apps/desktop
 pnpm tauri dev
 ```
+
+前端开发服务器地址为 `http://localhost:1420`，API 地址默认为 `http://127.0.0.1:8765`。可通过 `VITE_API_BASE_URL` 覆盖前端 API 地址，例如：
+
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:8765 pnpm tauri dev
+```
+
+验证后端是否启动成功：
+
+```bash
+curl http://127.0.0.1:8765/health
+# {"ok":true}
+```
+
+需要使用浏览器自动化任务时，还要先启动对应的 BitBrowser（默认 `127.0.0.1:54345`）或 AdsPower（默认 `127.0.0.1:50325`）本地服务；地址可在 `.env` 中通过 `NEXUS_FLOW_BITBROWSER_BASE_URL` 和 `NEXUS_FLOW_ADSPOWER_BASE_URL` 修改。
 
 只构建前端：
 
@@ -345,6 +382,7 @@ WorkItemSpec(key="default", input=dict(config), label="默认任务项")
 | `context.config`                                   | 任务配置           |
 | `context.input`                                    | 当前工作项输入     |
 | `await context.log(level, message)`                | 写入日志           |
+| `await context.notify.manual_action(...)`          | 请求前端人工处理提醒 |
 | `context.is_stopping()`                            | 是否正在停止       |
 | `context.raise_if_stopping()`                      | 停止时抛出取消异常 |
 | `context.results.add(...)`                         | 写入结构化结果     |

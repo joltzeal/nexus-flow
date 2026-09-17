@@ -7,9 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, for example v0.2.0"
+        description: "Existing release tag, for example v0.2.6"
         required: true
-        default: "v0.2.0"
 
 permissions:
   contents: write
@@ -51,6 +50,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify manually selected tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          git rev-parse --verify "refs/tags/${RELEASE_TAG}" >/dev/null
+          if [[ "$(git rev-list -n 1 "${RELEASE_TAG}")" != "${GITHUB_SHA}" ]]; then
+            echo "${RELEASE_TAG} does not point to the selected workflow commit."
+            exit 1
+          fi
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -88,7 +99,7 @@ jobs:
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
 
-      - name: Sync desktop version from release tag
+      - name: Verify source version matches release tag
         working-directory: apps/desktop
         shell: bash
         env:
@@ -101,15 +112,18 @@ jobs:
               throw new Error(`Invalid release tag version: ${process.env.RELEASE_TAG}`);
             }
 
-            for (const file of ["package.json", "src-tauri/tauri.conf.json"]) {
-              const json = JSON.parse(fs.readFileSync(file, "utf8"));
-              json.version = version;
-              fs.writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`);
+            const versions = {
+              "package.json": JSON.parse(fs.readFileSync("package.json", "utf8")).version,
+              "src-tauri/tauri.conf.json": JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version,
+              "src-tauri/Cargo.toml": (fs.readFileSync("src-tauri/Cargo.toml", "utf8").match(/^version = "([^"]+)"$/m) || [])[1],
+              "../../pyproject.toml": (fs.readFileSync("../../pyproject.toml", "utf8").match(/^version = "([^"]+)"$/m) || [])[1],
+            };
+            const mismatches = Object.entries(versions)
+              .filter(([, actual]) => actual !== version)
+              .map(([file, actual]) => `${file} is ${actual || "missing"}`);
+            if (mismatches.length) {
+              throw new Error(`Source version must match ${process.env.RELEASE_TAG}: ${mismatches.join(", ")}`);
             }
-
-            const cargoFile = "src-tauri/Cargo.toml";
-            const cargo = fs.readFileSync(cargoFile, "utf8");
-            fs.writeFileSync(cargoFile, cargo.replace(/^version = ".*"$/m, `version = "${version}"`));
           '
 
       - name: Build backend sidecar
